@@ -178,7 +178,10 @@ export default function GroupManagement() {
       toast({ title: "Both name and registration number are required", variant: "destructive" }); return;
     }
     if (newMemberName.length > 100) { toast({ title: "Name must be less than 100 characters", variant: "destructive" }); return; }
-    if (newMemberRegNumber.length > 50) { toast({ title: "Registration number must be less than 50 characters", variant: "destructive" }); return; }
+    const regPattern = /^H\d{6}[A-Za-z]$/;
+    if (!regPattern.test(newMemberRegNumber.trim())) {
+      toast({ title: "Invalid registration number", description: "Must be 8 characters: starts with H, followed by 6 digits, ends with a letter (e.g. H2345678A)", variant: "destructive" }); return;
+    }
     const isDuplicate = groupMembers.some(m => m.reg_number.toLowerCase() === newMemberRegNumber.trim().toLowerCase());
     if (isDuplicate) { toast({ title: "Duplicate registration number", variant: "destructive" }); return; }
     setGroupMembers([...groupMembers, { full_name: newMemberName.trim(), reg_number: newMemberRegNumber.trim() }]);
