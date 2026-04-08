@@ -79,10 +79,13 @@ export default function Projects() {
       const allIds = [...new Set([...supervisorIds, ...studentIds])];
       
       if (allIds.length > 0) {
+        // Try fetching profiles - RLS may limit what we can see
         const { data: allProfiles } = await supabase.from('profiles').select('user_id, full_name, email, department').in('user_id', allIds);
         const supNames: Record<string, string> = {};
         const stuNames: Record<string, string> = {};
         const stuDepts: Record<string, string> = {};
+        
+        // Map what we got from profiles
         allProfiles?.forEach(p => {
           if (supervisorIds.includes(p.user_id)) {
             supNames[p.user_id] = p.full_name || p.email || 'Unknown';
@@ -92,6 +95,37 @@ export default function Projects() {
             stuDepts[p.user_id] = p.department || '';
           }
         });
+
+        // For any missing supervisor names, try the supervisors table (has more permissive RLS)
+        const missingSupervisors = supervisorIds.filter(id => !supNames[id]);
+        if (missingSupervisors.length > 0) {
+          const { data: supData } = await supabase.from('supervisors').select('user_id, department').in('user_id', missingSupervisors);
+          if (supData) {
+            // Get profiles for these supervisors via a different approach
+            for (const sup of supData) {
+              const { data: supProfile } = await supabase.from('profiles').select('full_name, email, department').eq('user_id', sup.user_id).maybeSingle();
+              if (supProfile) {
+                supNames[sup.user_id] = supProfile.full_name || supProfile.email || 'Unknown';
+              }
+            }
+          }
+        }
+
+        // For any missing student names, try using project data or students table
+        const missingStudents = studentIds.filter(id => !stuNames[id]);
+        if (missingStudents.length > 0) {
+          const { data: stuData } = await supabase.from('students').select('user_id, department, student_number').in('user_id', missingStudents);
+          if (stuData) {
+            for (const stu of stuData) {
+              const { data: stuProfile } = await supabase.from('profiles').select('full_name, email, department').eq('user_id', stu.user_id).maybeSingle();
+              if (stuProfile) {
+                stuNames[stu.user_id] = stuProfile.full_name || stuProfile.email || 'Unknown';
+                stuDepts[stu.user_id] = stuProfile.department || stu.department || '';
+              }
+            }
+          }
+        }
+
         setSupervisorNames(supNames);
         setStudentNames(stuNames);
         setStudentDepartments(stuDepts);
