@@ -287,6 +287,10 @@ export default function GroupManagement() {
     if (!editMemberName.trim() || !editMemberRegNumber.trim()) {
       toast({ title: "Both name and registration number are required", variant: "destructive" }); return;
     }
+    const regPattern = /^H\d{6}[A-Za-z]$/;
+    if (!regPattern.test(editMemberRegNumber.trim())) {
+      toast({ title: "Invalid registration number", description: "Must be 8 characters: starts with H, followed by 6 digits, ends with a letter (e.g. H2345678A)", variant: "destructive" }); return;
+    }
     const currentGroup = groups.find(g => g.id === editGroupId);
     const isDuplicate = currentGroup?.group_members?.some(
       member => member.reg_number?.toLowerCase() === editMemberRegNumber.trim().toLowerCase()
