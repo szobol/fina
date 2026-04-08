@@ -303,12 +303,12 @@ export default function GroupManagement() {
     finally { setLoading(false); }
   };
 
-  const CreateGroupDialog = () => (
+  const createGroupDialog = (
     <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
       <DialogTrigger asChild>
         <Button><Plus className="h-4 w-4 mr-2" />Create Group</Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto" onPointerDownOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>Create Student Group</DialogTitle>
           <DialogDescription>Create a new group and add members</DialogDescription>
@@ -316,7 +316,7 @@ export default function GroupManagement() {
         <div className="space-y-4">
           <div>
             <Label htmlFor="groupName">Group Name *</Label>
-            <Input id="groupName" value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Enter group name" />
+            <Input id="groupName" value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Enter group name" autoComplete="off" />
           </div>
           <div>
             <Label htmlFor="groupDescription">Description</Label>
@@ -324,7 +324,7 @@ export default function GroupManagement() {
           </div>
           <div>
             <Label htmlFor="groupDepartment">Department</Label>
-            <Input id="groupDepartment" value={groupDepartment} onChange={(e) => setGroupDepartment(e.target.value)} placeholder="Enter department" />
+            <Input id="groupDepartment" value={groupDepartment} onChange={(e) => setGroupDepartment(e.target.value)} placeholder="Enter department" autoComplete="off" />
           </div>
           <div>
             <Label htmlFor="projectType">Project Type</Label>
@@ -347,11 +347,11 @@ export default function GroupManagement() {
             <div className="flex gap-2">
               <div className="flex-1">
                 <Input placeholder="Full Name" value={newMemberName} onChange={(e) => setNewMemberName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && addGroupMember()} />
+                  onKeyDown={(e) => e.key === 'Enter' && addGroupMember()} autoComplete="off" />
               </div>
               <div className="flex-1">
                 <Input placeholder="Registration Number" value={newMemberRegNumber} onChange={(e) => setNewMemberRegNumber(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && addGroupMember()} />
+                  onKeyDown={(e) => e.key === 'Enter' && addGroupMember()} autoComplete="off" />
               </div>
               <Button type="button" onClick={addGroupMember} variant="outline"><Plus className="h-4 w-4" /></Button>
             </div>
@@ -549,7 +549,7 @@ export default function GroupManagement() {
       <section>
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-2xl font-semibold">Student Groups ({groups.length})</h2>
-          {(userType === 'student' || userType === 'admin') && <CreateGroupDialog />}
+          {(userType === 'student' || userType === 'admin') && createGroupDialog}
         </div>
         
         {groups.length === 0 && userType === 'student' && (
