@@ -64,9 +64,9 @@ export default function Projects() {
       let projectsQuery = supabase.from('projects').select('*').order('created_at', { ascending: false });
       if (profileData.user_type === 'student') projectsQuery = projectsQuery.eq('student_id', user.id);
       else if (profileData.user_type === 'supervisor') {
-        // Supervisors see projects assigned to them + pending unassigned
+        // Supervisors see only projects assigned to them (pending via pending_allocations or already assigned)
         projectsQuery = supabase.from('projects').select('*')
-          .or(`supervisor_id.eq.${user.id},and(status.eq.pending,supervisor_id.is.null)`)
+          .or(`supervisor_id.eq.${user.id}`)
           .order('created_at', { ascending: false });
       }
       const { data: projectsData, error: projectsError } = await projectsQuery;
