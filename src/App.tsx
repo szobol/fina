@@ -11,7 +11,7 @@ import Auth from "./pages/Auth";
 import DashboardHub from "./pages/DashboardHub";
 import Projects from "./pages/Projects";
 import CreateProject from "./pages/CreateProject";
-import DuplicateDetection from "./pages/DuplicateDetection";
+
 import Repository from "./pages/Repository";
 import Allocation from "./pages/Allocation";
 import SupervisorProfile from "./pages/SupervisorProfile";
@@ -50,7 +50,7 @@ const App = () => (
             {/* Supervisor routes */}
             <Route path="/supervisor-profile" element={<ProtectedRoute allowedRoles={['supervisor']}><SupervisorProfile /></ProtectedRoute>} />
             <Route path="/project-management" element={<ProtectedRoute allowedRoles={['student', 'supervisor', 'admin']}><ProjectManagement /></ProtectedRoute>} />
-            <Route path="/duplicate-detection" element={<ProtectedRoute allowedRoles={['supervisor', 'admin']}><DuplicateDetection /></ProtectedRoute>} />
+            {/* duplicate-detection route removed — duplicate check is now inline in CreateProject */}
             <Route path="/allocation" element={<ProtectedRoute allowedRoles={['supervisor', 'admin']}><Allocation /></ProtectedRoute>} />
 
             {/* Admin routes */}
