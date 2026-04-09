@@ -6,7 +6,7 @@ import {
   FolderKanban,
   ClipboardList,
   Archive,
-  Shield,
+  
   Sparkles,
   User,
   LayoutDashboard,
@@ -64,7 +64,6 @@ export function AppSidebar() {
         { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard, color: "text-primary" },
         { name: "Assigned Projects", href: "/projects", icon: FolderKanban, color: "text-primary" },
         { name: "Project Orchestration", href: "/project-management", icon: ClipboardList, color: "text-secondary" },
-        { name: "Duplicate Detection", href: "/duplicate-detection", icon: Shield, color: "text-destructive" },
         { name: "Smart Allocation", href: "/allocation", icon: Sparkles, color: "text-[hsl(var(--accent-gold))]" },
         { name: "Repository", href: "/repository", icon: Archive, color: "text-success" },
       ]
@@ -77,7 +76,7 @@ export function AppSidebar() {
         { name: "Dashboard", href: "/admin", icon: LayoutDashboard, color: "text-primary" },
         { name: "All Projects", href: "/projects", icon: FolderKanban, color: "text-[hsl(var(--accent-gold))]" },
         { name: "Project Orchestration", href: "/project-management", icon: ClipboardList, color: "text-primary" },
-        { name: "Duplicate Detection", href: "/duplicate-detection", icon: Shield, color: "text-destructive" },
+        
         { name: "Smart Allocation", href: "/allocation", icon: Sparkles, color: "text-[hsl(var(--accent-gold))]" },
         { name: "Student Groups", href: "/student-groups", icon: Users, color: "text-secondary" },
         { name: "Analytics", href: "/analytics", icon: BarChart3, color: "text-success" },
