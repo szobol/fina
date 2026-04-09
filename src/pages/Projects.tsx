@@ -86,7 +86,6 @@ export default function Projects() {
         if (projErr) throw projErr;
         projectsData = data || [];
       }
-      if (projectsError) throw projectsError;
       setProjects(projectsData || []);
 
       // Fetch all profiles for student and supervisor IDs
