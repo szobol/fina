@@ -81,7 +81,7 @@ export default function CreateProject() {
             description: data.description,
             keywords: (data.keywords || []).join(', '),
             department: data.department || '',
-            category: data.category || '',
+            category: (data as any).category || '',
           });
           setResubmitFeedback(data.rejection_reason);
         }
@@ -154,9 +154,9 @@ export default function CreateProject() {
       if (resubmitId) {
         const { error } = await supabase.from('projects').update({
           title: formData.title, description: formData.description, objectives: formData.objectives,
-          keywords: keywordsArray, department: formData.department, category: formData.category,
+          keywords: keywordsArray, department: formData.department,
           status: 'pending', rejection_reason: null,
-        }).eq('id', resubmitId);
+        } as any).eq('id', resubmitId);
         if (error) throw error;
         try {
           const { data: allocData } = await supabase.functions.invoke('smart-allocation', { body: { action: 'auto_allocate_project', projectId: resubmitId } });
@@ -167,11 +167,11 @@ export default function CreateProject() {
       } else {
         const { data: project, error } = await supabase.from('projects').insert({
           title: formData.title, description: formData.description, objectives: formData.objectives,
-          student_id: user.id, keywords: keywordsArray, department: formData.department, category: formData.category,
+          student_id: user.id, keywords: keywordsArray, department: formData.department,
           status: isFinished ? 'completed' : 'pending',
           similarity_score: duplicateResult?.highestSimilarity || 0,
           is_duplicate: false,
-        }).select().single();
+        } as any).select().single();
         if (error) throw error;
         if (!isFinished && project) {
           try {
