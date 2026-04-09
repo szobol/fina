@@ -7,12 +7,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const SIMILARITY_THRESHOLD = 35; // Projects above this % are considered duplicates
+
 interface Project {
   id: string;
   title: string;
   description: string;
   objectives: string;
   student_id: string;
+  supervisor_id?: string;
+  year?: number;
 }
 
 interface SimilarityResult {
@@ -20,8 +24,6 @@ interface SimilarityResult {
   score: number;
 }
 
-// Use transformer-based AI model (Sentence-BERT style semantic similarity)
-// to compute dense semantic embeddings and similarity scores
 async function computeSemanticSimilarity(
   newProject: { title: string; objectives: string; description: string },
   existingProjects: Project[],
@@ -29,14 +31,13 @@ async function computeSemanticSimilarity(
 ): Promise<SimilarityResult[]> {
   if (existingProjects.length === 0) return [];
 
-  // Batch projects for efficiency (process in chunks to avoid token limits)
   const batchSize = 10;
   const allResults: SimilarityResult[] = [];
 
   for (let i = 0; i < existingProjects.length; i += batchSize) {
     const batch = existingProjects.slice(i, i + batchSize);
 
-    const projectList = batch.map((p, idx) => 
+    const projectList = batch.map((p, idx) =>
       `Project ${idx + 1} (ID: ${p.id}):\nTitle: ${p.title}\nObjectives: ${p.objectives || 'N/A'}\nDescription: ${p.description}`
     ).join('\n\n');
 
@@ -69,7 +70,7 @@ Return similarity scores for each project.`;
         body: JSON.stringify({
           model: 'google/gemini-2.5-flash',
           messages: [
-            { role: 'system', content: 'You are a semantic similarity scoring engine. Use deep semantic understanding to compare texts.' },
+            { role: 'system', content: 'You are a semantic similarity scoring engine.' },
             { role: 'user', content: prompt }
           ],
           tools: [{
@@ -85,9 +86,9 @@ Return similarity scores for each project.`;
                     items: {
                       type: 'object',
                       properties: {
-                        project_id: { type: 'string', description: 'The ID of the existing project' },
-                        similarity_score: { type: 'number', description: 'Similarity score from 0 to 100' },
-                        reasoning: { type: 'string', description: 'Brief explanation of why this score was given' }
+                        project_id: { type: 'string' },
+                        similarity_score: { type: 'number' },
+                        reasoning: { type: 'string' }
                       },
                       required: ['project_id', 'similarity_score', 'reasoning'],
                       additionalProperties: false
@@ -104,9 +105,7 @@ Return similarity scores for each project.`;
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`AI gateway error [${response.status}]:`, errorText);
-        // Fallback to basic similarity for this batch
+        console.error(`AI gateway error [${response.status}]:`, await response.text());
         for (const p of batch) {
           allResults.push({ projectId: p.id, score: fallbackSimilarity(newProject, p) });
         }
@@ -115,7 +114,7 @@ Return similarity scores for each project.`;
 
       const data = await response.json();
       const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
-      
+
       if (toolCall?.function?.arguments) {
         const parsed = JSON.parse(toolCall.function.arguments);
         for (const item of parsed.scores) {
@@ -125,7 +124,6 @@ Return similarity scores for each project.`;
           });
         }
       } else {
-        // Fallback if structured output fails
         for (const p of batch) {
           allResults.push({ projectId: p.id, score: fallbackSimilarity(newProject, p) });
         }
@@ -141,7 +139,6 @@ Return similarity scores for each project.`;
   return allResults;
 }
 
-// Fallback: basic Jaccard similarity if AI gateway is unavailable
 function fallbackSimilarity(p1: { title: string; description: string }, p2: { title: string; description: string }): number {
   const words1 = new Set(`${p1.title} ${p1.description}`.toLowerCase().split(/\s+/));
   const words2 = new Set(`${p2.title} ${p2.description}`.toLowerCase().split(/\s+/));
@@ -162,14 +159,12 @@ serve(async (req) => {
     const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
 
     if (!lovableApiKey) {
-      console.error('LOVABLE_API_KEY not configured');
       return new Response(
         JSON.stringify({ error: 'AI service not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Authenticate the caller
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
       return new Response(
@@ -189,38 +184,49 @@ serve(async (req) => {
       );
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
     const { title, objectives, description } = await req.json();
-    const userId = user.id;
-
-    console.log('Checking duplicate for project (Sentence-BERT style semantic analysis):', { title, userId });
 
     if (!title || !objectives || !description) {
       return new Response(
-        JSON.stringify({ error: 'Missing required fields: title, objectives, and description are all required' }),
+        JSON.stringify({ error: 'Missing required fields: title, objectives, and description' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Fetch all existing projects
-    const { data: existingProjects, error: fetchError } = await supabase
+    // Fetch all existing projects (don't insert anything - just check)
+    const { data: existingProjects, error: fetchError } = await adminClient
       .from('projects')
-      .select('id, title, objectives, description, student_id');
+      .select('id, title, objectives, description, student_id, supervisor_id, year');
 
-    if (fetchError) {
-      console.error('Error fetching projects:', fetchError);
-      throw fetchError;
-    }
+    if (fetchError) throw fetchError;
 
-    // Compute semantic similarity using transformer-based model
     const similarityResults = await computeSemanticSimilarity(
       { title, objectives, description },
       existingProjects || [],
       lovableApiKey
     );
 
-    // Build results
+    // Gather profile info for similar projects
+    const allUserIds = new Set<string>();
+    existingProjects?.forEach(p => {
+      if (p.student_id) allUserIds.add(p.student_id);
+      if (p.supervisor_id) allUserIds.add(p.supervisor_id);
+    });
+
+    let profileMap: Record<string, string> = {};
+    if (allUserIds.size > 0) {
+      const { data: profiles } = await adminClient
+        .from('profiles')
+        .select('user_id, full_name, email')
+        .in('user_id', [...allUserIds]);
+      profiles?.forEach(p => {
+        profileMap[p.user_id] = p.full_name || p.email || 'Unknown';
+      });
+    }
+
+    // Build results — flag as duplicate if any score > threshold
     const similarities: Array<{ project: Project; score: number }> = [];
     let isDuplicate = false;
     let highestMatch: { project: Project; score: number } | null = null;
@@ -229,7 +235,7 @@ serve(async (req) => {
       const project = existingProjects?.find(p => p.id === result.projectId);
       if (!project) continue;
 
-      if (result.score > 70) {
+      if (result.score > SIMILARITY_THRESHOLD) {
         isDuplicate = true;
         similarities.push({ project, score: result.score });
       }
@@ -239,63 +245,24 @@ serve(async (req) => {
       }
     }
 
-    // Sort by similarity score (highest first)
     similarities.sort((a, b) => b.score - a.score);
 
-    // Check if this exact project already exists from this user
-    const { data: existingUserProject } = await supabase
-      .from('projects')
-      .select('id')
-      .eq('student_id', userId)
-      .eq('title', title)
-      .eq('description', description)
-      .maybeSingle();
-
-    let projectId = existingUserProject?.id;
-
-    // Only insert if not a duplicate submission from same user
-    if (!existingUserProject) {
-      const { data: newProject, error: insertError } = await supabase
-        .from('projects')
-        .insert({
-          title,
-          objectives,
-          description,
-          student_id: userId,
-          status: 'pending',
-          similarity_score: highestMatch ? highestMatch.score : 0,
-          is_duplicate: isDuplicate,
-        })
-        .select('id')
-        .single();
-
-      if (insertError) {
-        console.error('Error inserting project:', insertError);
-        throw insertError;
-      }
-
-      projectId = newProject.id;
-      console.log('Project added to repository:', projectId);
-    } else {
-      console.log('Project already exists in repository:', projectId);
-    }
-
-    // Prepare response
     const response = {
-      projectId,
       isDuplicate,
-      isNewSubmission: !existingUserProject,
       highestSimilarity: highestMatch ? highestMatch.score : 0,
       similarProjects: similarities.slice(0, 5).map(s => ({
         id: s.project.id,
         title: s.project.title,
         description: s.project.description,
+        objectives: s.project.objectives,
         similarity: Math.round(s.score * 10) / 10,
+        student_name: profileMap[s.project.student_id] || 'Unknown',
+        supervisor_name: s.project.supervisor_id ? (profileMap[s.project.supervisor_id] || 'Not assigned') : 'Not assigned',
+        year: s.project.year || new Date(Date.now()).getFullYear(),
       })),
       message: isDuplicate
-        ? `⚠️ Potential duplicate detected: Semantic analysis found similar project(s) (${Math.round(highestMatch!.score)}% semantic match).`
-        : '✅ No semantic duplicates found. Project added to repository.',
-      algorithm: 'Transformer-based Semantic Textual Similarity (Sentence-BERT style)',
+        ? `⚠️ Submission blocked: Found similar project(s) above ${SIMILARITY_THRESHOLD}% threshold (highest: ${Math.round(highestMatch!.score)}%).`
+        : `✅ No significant duplicates found (highest similarity: ${highestMatch ? Math.round(highestMatch.score) : 0}%). You may proceed.`,
     };
 
     return new Response(
