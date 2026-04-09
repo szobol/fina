@@ -61,15 +61,31 @@ export default function Projects() {
       if (!profileData) { setLoading(false); return; }
       setProfile(profileData);
 
-      let projectsQuery = supabase.from('projects').select('*').order('created_at', { ascending: false });
-      if (profileData.user_type === 'student') projectsQuery = projectsQuery.eq('student_id', user.id);
-      else if (profileData.user_type === 'supervisor') {
-        // Supervisors see only projects assigned to them (pending via pending_allocations or already assigned)
-        projectsQuery = supabase.from('projects').select('*')
-          .or(`supervisor_id.eq.${user.id}`)
-          .order('created_at', { ascending: false });
+      let projectsData: Project[] = [];
+      if (profileData.user_type === 'student') {
+        const { data, error: projErr } = await supabase.from('projects').select('*').eq('student_id', user.id).order('created_at', { ascending: false });
+        if (projErr) throw projErr;
+        projectsData = data || [];
+      } else if (profileData.user_type === 'supervisor') {
+        // Get projects directly assigned
+        const { data: assigned } = await supabase.from('projects').select('*').eq('supervisor_id', user.id).order('created_at', { ascending: false });
+        // Get projects with pending allocation to this supervisor
+        const { data: pendingAllocs } = await supabase.from('pending_allocations').select('project_id').eq('supervisor_id', user.id).eq('status', 'pending');
+        const pendingProjectIds = (pendingAllocs || []).map(a => a.project_id).filter(Boolean);
+        let pendingProjects: Project[] = [];
+        if (pendingProjectIds.length > 0) {
+          const { data: pp } = await supabase.from('projects').select('*').in('id', pendingProjectIds);
+          pendingProjects = pp || [];
+        }
+        // Merge and deduplicate
+        const allProjects = [...(assigned || []), ...pendingProjects];
+        const seen = new Set<string>();
+        projectsData = allProjects.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
+      } else {
+        const { data, error: projErr } = await supabase.from('projects').select('*').order('created_at', { ascending: false });
+        if (projErr) throw projErr;
+        projectsData = data || [];
       }
-      const { data: projectsData, error: projectsError } = await projectsQuery;
       if (projectsError) throw projectsError;
       setProjects(projectsData || []);
 
