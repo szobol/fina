@@ -107,33 +107,29 @@ export default function MyProfile() {
         updates.max_projects = parseInt(form.max_projects) || 5;
       }
 
-      const operations = [
-        supabase
-          .from('profiles')
-          .update(updates)
-          .eq('user_id', user.id),
-      ];
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('user_id', user.id);
+
+      if (profileError) throw profileError;
 
       if (isSupervisor) {
-        operations.push(
-          supabase
-            .from('supervisors')
-            .upsert(
-              {
-                user_id: user.id,
-                department: updates.department || null,
-                research_areas: updates.research_areas || [],
-                max_projects: updates.max_projects || 5,
-              },
-              { onConflict: 'user_id' }
-            )
-        );
+        const { error: supervisorError } = await supabase
+          .from('supervisors')
+          .upsert(
+            {
+              user_id: user.id,
+              department: updates.department || null,
+              research_areas: updates.research_areas || [],
+              max_projects: updates.max_projects || 5,
+            },
+            { onConflict: 'user_id' }
+          );
+
+        if (supervisorError) throw supervisorError;
       }
 
-      const results = await Promise.all(operations);
-      const error = results.find((result) => result.error)?.error;
-
-      if (error) throw error;
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] });
       setEditing(false);
       toast.success('Profile updated successfully');
