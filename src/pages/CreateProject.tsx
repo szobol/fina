@@ -50,6 +50,18 @@ interface DuplicateCheckResult {
   highestSimilarity: number;
 }
 
+const normalizeCategory = (value: string) => value.trim().toLowerCase();
+
+const getStoredCategory = (project: { keywords?: string[] | null }) => {
+  const keywords = project.keywords || [];
+  return PROJECT_CATEGORIES.find((category) =>
+    keywords.some((keyword) => normalizeCategory(keyword) === normalizeCategory(category))
+  ) || "";
+};
+
+const buildProjectKeywords = (category: string) =>
+  category.trim() ? [category.trim()] : [];
+
 export default function CreateProject() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -60,7 +72,8 @@ export default function CreateProject() {
   const [isFinished, setIsFinished] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [allocationResult, setAllocationResult] = useState<any>(null);
-  const [formData, setFormData] = useState({ title: "", objectives: "", description: "", keywords: "", department: "", category: "" });
+  const [formData, setFormData] = useState({ title: "", objectives: "", description: "", department: "", category: "" });
+  const [submitting, setSubmitting] = useState(false);
   const [resubmitId, setResubmitId] = useState<string | null>(null);
   const [resubmitFeedback, setResubmitFeedback] = useState<string | null>(null);
   const [duplicateResult, setDuplicateResult] = useState<DuplicateCheckResult | null>(null);
@@ -79,9 +92,8 @@ export default function CreateProject() {
             title: data.title,
             objectives: data.objectives || '',
             description: data.description,
-            keywords: (data.keywords || []).join(', '),
             department: data.department || '',
-            category: (data as any).category || '',
+            category: getStoredCategory(data),
           });
           setResubmitFeedback(data.rejection_reason);
         }
@@ -147,16 +159,16 @@ export default function CreateProject() {
       return;
     }
 
+    if (submitting) return;
+    setSubmitting(true);
     setLoading(true);
     try {
-      const keywordsArray = formData.keywords.split(',').map(k => k.trim()).filter(k => k.length > 0);
-
       if (resubmitId) {
         const { error } = await supabase.from('projects').update({
           title: formData.title, description: formData.description, objectives: formData.objectives,
-          keywords: keywordsArray, department: formData.department,
+          department: formData.department, keywords: buildProjectKeywords(formData.category),
           status: 'pending', rejection_reason: null,
-        } as any).eq('id', resubmitId);
+        }).eq('id', resubmitId);
         if (error) throw error;
         try {
           const { data: allocData } = await supabase.functions.invoke('smart-allocation', { body: { action: 'auto_allocate_project', projectId: resubmitId } });
@@ -167,11 +179,12 @@ export default function CreateProject() {
       } else {
         const { data: project, error } = await supabase.from('projects').insert({
           title: formData.title, description: formData.description, objectives: formData.objectives,
-          student_id: user.id, keywords: keywordsArray, department: formData.department,
+          student_id: user.id, department: formData.department,
+          keywords: buildProjectKeywords(formData.category),
           status: isFinished ? 'completed' : 'pending',
           similarity_score: duplicateResult?.highestSimilarity || 0,
           is_duplicate: false,
-        } as any).select().single();
+        }).select().single();
         if (error) throw error;
         if (!isFinished && project) {
           try {
@@ -183,7 +196,7 @@ export default function CreateProject() {
         toast({ title: isFinished ? "Project Added!" : "Project Submitted!" });
       }
     } catch (error: any) { toast({ title: "Failed", description: error.message, variant: "destructive" }); }
-    finally { setLoading(false); }
+    finally { setLoading(false); setSubmitting(false); }
   };
 
   if (!user) return <AuthenticatedLayout><div className="text-center py-12"><p>Please log in.</p></div></AuthenticatedLayout>;
@@ -217,7 +230,7 @@ export default function CreateProject() {
               </div>
               <div className="flex gap-3 justify-center">
                 <Button onClick={() => navigate('/projects')}>View Projects</Button>
-                <Button variant="outline" onClick={() => { setSubmitted(false); setAllocationResult(null); setDuplicateResult(null); setDuplicateChecked(false); setFormData({ title: "", objectives: "", description: "", keywords: "", department: "", category: "" }); }}>Submit Another</Button>
+                <Button variant="outline" onClick={() => { setSubmitted(false); setAllocationResult(null); setDuplicateResult(null); setDuplicateChecked(false); setFormData({ title: "", objectives: "", description: "", department: "", category: "" }); }}>Submit Another</Button>
               </div>
             </CardContent>
           </Card>
@@ -282,10 +295,10 @@ export default function CreateProject() {
                 <Textarea value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} placeholder="Describe methodology and expected outcomes..." rows={5} required />
               </div>
 
-              <div className="space-y-2">
-                <Label>Keywords *</Label>
-                <Input value={formData.keywords} onChange={e => setFormData({ ...formData, keywords: e.target.value })} placeholder="machine learning, web development, AI" required />
-                <p className="text-xs text-muted-foreground">Critical for supervisor matching. Separate with commas.</p>
+              <div className="flex justify-end">
+                <Button type="button" variant="outline" size="sm" onClick={() => setFormData({ title: "", objectives: "", description: "", department: "", category: "" })}>
+                  Clear All Fields
+                </Button>
               </div>
 
               {/* Duplicate Check Section */}

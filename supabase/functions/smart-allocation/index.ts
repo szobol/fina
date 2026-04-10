@@ -50,6 +50,61 @@ function ngramSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+function normalizeLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getProjectCategory(project: any): string {
+  if (typeof project?.category === 'string' && project.category.trim()) {
+    return project.category.trim();
+  }
+
+  if (Array.isArray(project?.keywords) && project.keywords.length > 0) {
+    return String(project.keywords[0] || '').trim();
+  }
+
+  return '';
+}
+
+function researchAreaMatchesCategory(category: string, researchArea: string): boolean {
+  const normalizedCategory = normalizeLabel(category);
+  const normalizedArea = normalizeLabel(researchArea);
+
+  if (!normalizedCategory || !normalizedArea) return false;
+  if (normalizedArea.includes(normalizedCategory) || normalizedCategory.includes(normalizedArea)) return true;
+
+  const categoryTerms = normalizedCategory.split(' ').filter(term => term.length > 2);
+  const areaTerms = normalizedArea.split(' ').filter(term => term.length > 2);
+
+  if (categoryTerms.some(term => areaTerms.includes(term))) return true;
+
+  return ngramSimilarity(normalizedArea, normalizedCategory) > 0.45;
+}
+
+function getMatchingSupervisors(project: any, supervisors: any[], maxProjectsDefault: number) {
+  const projectCategory = getProjectCategory(project);
+
+  if (!projectCategory) {
+    return { projectCategory, matchingSupervisors: [] as any[] };
+  }
+
+  const matchingSupervisors = supervisors.filter((supervisor) => {
+    const maxAllowed = supervisor.max_projects || maxProjectsDefault;
+    if ((supervisor.current_projects || 0) >= maxAllowed) return false;
+
+    const researchAreas = Array.isArray(supervisor.research_areas) ? supervisor.research_areas : [];
+    if (researchAreas.length === 0) return false;
+
+    return researchAreas.some((area: string) => researchAreaMatchesCategory(projectCategory, area));
+  });
+
+  return { projectCategory, matchingSupervisors };
+}
+
 /** Build TF-IDF vectors from a corpus of documents */
 function buildTfIdf(documents: string[][]): { vectors: Map<string, number>[]; idf: Map<string, number> } {
   const N = documents.length;
@@ -215,6 +270,7 @@ function scoreMatch(
 ): ScoringResult {
   const reasons: string[] = [];
   let tfidfScore = 0, keywordScore = 0, fuzzyScore = 0, deptScore = 0, workloadScore = 0;
+  const projectCategory = getProjectCategory(project);
 
   // 1. TF-IDF Cosine Similarity (0-35 points)
   if (projectVector && supervisorVector) {
@@ -226,7 +282,9 @@ function scoreMatch(
   }
 
   // 2. Exact & partial keyword matching (0-25 points)
-  const projectKeywords = (project.keywords || []).map((k: string) => k.toLowerCase());
+  const projectKeywords = ((project.keywords && project.keywords.length > 0)
+    ? project.keywords
+    : (projectCategory ? [projectCategory] : [])).map((k: string) => k.toLowerCase());
   const researchAreas = (supervisor.research_areas || []).map((a: string) => a.toLowerCase());
 
   if (projectKeywords.length > 0 && researchAreas.length > 0) {
@@ -313,6 +371,7 @@ function projectToDocument(project: any): string[] {
     project.description || '',
     ...(project.keywords || []),
     project.department || '',
+    getProjectCategory(project),
   ];
   return tokenize(parts.join(' '));
 }
@@ -503,7 +562,7 @@ serve(async (req) => {
               title: 'Supervisor Assigned! 🎉',
               message: `A supervisor has been assigned to your project "${project.title}" based on expertise matching.`,
               type: 'allocation',
-              link: '/projects'
+              link: `/projects/${project.id}`
             });
           }
         }
@@ -816,17 +875,49 @@ serve(async (req) => {
 
       const maxProjects = rules?.find(r => r.rule_name === 'max_projects_per_supervisor')?.rule_value || 5;
 
-      // Build TF-IDF
+      const { projectCategory, matchingSupervisors } = getMatchingSupervisors(project, supervisorsData || [], maxProjects);
+
+      await supabaseClient
+        .from('pending_allocations')
+        .delete()
+        .eq('project_id', projectId);
+
+      if (!projectCategory || matchingSupervisors.length === 0) {
+        // No supervisors available — notify admin for manual assignment
+        const { data: admins } = await supabaseClient
+          .from('profiles')
+          .select('user_id')
+          .eq('user_type', 'admin');
+
+        if (admins && admins.length > 0) {
+          for (const admin of admins) {
+            await supabaseClient.from('notifications').insert({
+              user_id: admin.user_id,
+              title: 'Manual Assignment Needed',
+              message: !projectCategory
+                ? `Project "${project.title}" is missing a category, so expertise-based allocation could not run. Please assign manually.`
+                : `Project "${project.title}" could not be auto-assigned because no supervisor matches the ${projectCategory} expertise. Please assign manually.`,
+              type: 'allocation',
+              link: `/projects/${projectId}`,
+            });
+          }
+        }
+
+        return new Response(
+          JSON.stringify({ success: true, allocated: false, message: !projectCategory ? 'Project category is missing, so expertise matching could not run.' : 'No supervisor with matching expertise was found. Admin has been notified for manual assignment.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Build TF-IDF for scoring
       const projDoc = projectToDocument(project);
-      const supDocs = (supervisorsData || []).map(s => supervisorToDocument(s));
+      const supDocs = matchingSupervisors.map(s => supervisorToDocument(s));
       const { vectors } = buildTfIdf([projDoc, ...supDocs]);
 
       let bestMatch: any = null;
       let bestScore = 0;
-
-      for (let si = 0; si < (supervisorsData || []).length; si++) {
-        const supervisor = supervisorsData![si];
-        if ((supervisor.current_projects || 0) >= (supervisor.max_projects || maxProjects)) continue;
+      for (let si = 0; si < matchingSupervisors.length; si++) {
+        const supervisor = matchingSupervisors[si];
 
         const result = scoreMatch(
           project, supervisor,
@@ -841,43 +932,40 @@ serve(async (req) => {
         }
       }
 
-      if (!bestMatch) {
-        return new Response(
-          JSON.stringify({ success: true, allocated: false, message: 'No matching supervisor found. Project will remain pending for manual assignment.' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+      // Create pending allocation for best match
+      if (bestMatch) {
+        const { error: allocError } = await supabaseClient
+          .from('pending_allocations')
+          .insert({
+            project_id: projectId,
+            supervisor_id: bestMatch.supervisor.user_id,
+            match_score: bestMatch.score,
+            match_reason: bestMatch.reasons.join(', '),
+            status: 'pending',
+          });
+
+        if (allocError) throw allocError;
+
+        await supabaseClient
+          .from('notifications')
+          .insert({
+            user_id: bestMatch.supervisor.user_id,
+            title: 'New Project Submission',
+            message: `A new ${projectCategory} project "${project.title}" matches your expertise (${bestMatch.score}% match). Please review it.`,
+            type: 'allocation',
+            link: `/projects/${projectId}`
+          });
       }
-
-      const { error: allocError } = await supabaseClient
-        .from('pending_allocations')
-        .insert({
-          project_id: projectId,
-          supervisor_id: bestMatch.supervisor.user_id,
-          match_score: bestMatch.score,
-          match_reason: bestMatch.reasons.join(', '),
-          status: 'pending',
-        });
-
-      if (allocError) throw allocError;
-
-      await supabaseClient
-        .from('notifications')
-        .insert({
-          user_id: bestMatch.supervisor.user_id,
-          title: 'New Project Submission',
-          message: `A new project "${project.title}" has been matched to your expertise (${bestMatch.score}% match). Please review.`,
-          type: 'allocation',
-          link: '/allocation'
-        });
 
       return new Response(
         JSON.stringify({
           success: true,
-          allocated: true,
-          supervisorName: bestMatch.supervisor.user_id,
-          matchScore: bestMatch.score,
-          matchReason: bestMatch.reasons.join(', '),
-          breakdown: bestMatch.breakdown
+          allocated: !!bestMatch,
+          supervisorName: bestMatch?.supervisor.user_id,
+          matchScore: bestMatch?.score || 0,
+          matchReason: bestMatch?.reasons.join(', ') || '',
+          breakdown: bestMatch?.breakdown,
+          notifiedSupervisors: bestMatch ? 1 : 0,
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -935,16 +1023,31 @@ serve(async (req) => {
         const maxProjectsDefault = rules?.find(r => r.rule_name === 'max_projects_per_supervisor')?.rule_value || 5;
 
         if (project && allSupervisors?.length) {
+          const { projectCategory, matchingSupervisors } = getMatchingSupervisors(project, allSupervisors, maxProjectsDefault);
+
+          if (!projectCategory) {
+            return new Response(
+              JSON.stringify({ error: 'Project category is required before approval can assign a supervisor.' }),
+              { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+
+          if (matchingSupervisors.length === 0) {
+            return new Response(
+              JSON.stringify({ error: `No supervisor with matching expertise was found for ${projectCategory}. Please use manual assignment.` }),
+              { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+
           const projDoc = projectToDocument(project);
-          const supDocs = allSupervisors.map(s => supervisorToDocument(s));
+          const supDocs = matchingSupervisors.map(s => supervisorToDocument(s));
           const { vectors } = buildTfIdf([projDoc, ...supDocs]);
 
           let bestMatch: any = null;
           let bestScore = 0;
 
-          for (let si = 0; si < allSupervisors.length; si++) {
-            const supervisor = allSupervisors[si];
-            if ((supervisor.current_projects || 0) >= (supervisor.max_projects || maxProjectsDefault)) continue;
+          for (let si = 0; si < matchingSupervisors.length; si++) {
+            const supervisor = matchingSupervisors[si];
 
             const result = scoreMatch(
               project, supervisor,
@@ -1020,7 +1123,7 @@ serve(async (req) => {
             title: 'Project Approved! 🎉',
             message: `Your project "${project.title}" has been approved${assignedSupervisorId ? ` and assigned to ${assignedSupervisorName}` : ''}.`,
             type: 'project',
-            link: '/projects'
+            link: `/projects/${projectId}`
           });
       }
 
@@ -1071,7 +1174,7 @@ serve(async (req) => {
             title: 'Project Needs Revision',
             message: `${supProfile?.full_name || 'Your supervisor'} has requested revisions on "${project.title}": ${rejectionReason.trim()}`,
             type: 'project',
-            link: '/projects'
+            link: `/projects/${projectId}`
           });
       }
 
