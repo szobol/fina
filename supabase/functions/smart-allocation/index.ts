@@ -256,6 +256,24 @@ interface ScoringResult {
   };
 }
 
+function emptyBreakdown() {
+  return {
+    tfidfSimilarity: 0,
+    keywordMatch: 0,
+    fuzzyMatch: 0,
+    departmentMatch: 0,
+    workloadBalance: 0,
+  };
+}
+
+function emptyScoreResult(reason = 'No expertise match'): ScoringResult {
+  return {
+    score: 0,
+    reasons: [reason],
+    breakdown: emptyBreakdown(),
+  };
+}
+
 /**
  * Modern multi-factor scoring for project-supervisor matching.
  * Weights: TF-IDF (35%) | Keywords (25%) | Fuzzy (10%) | Department (15%) | Workload (15%)
@@ -395,15 +413,21 @@ serve(async (req) => {
   }
 
   try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
     const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      supabaseUrl,
+      supabaseAnonKey,
       {
         global: {
           headers: { Authorization: req.headers.get('Authorization')! },
         },
       }
     );
+    const adminClient = serviceRoleKey
+      ? createClient(supabaseUrl, serviceRoleKey)
+      : supabaseClient;
 
     const { data: { user } } = await supabaseClient.auth.getUser();
     if (!user) {
@@ -499,10 +523,19 @@ serve(async (req) => {
       const scoreDetails: ScoringResult[][] = [];
 
       for (let pi = 0; pi < projects.length; pi++) {
+        const { matchingSupervisors } = getMatchingSupervisors(projects[pi], supervisors || [], maxProjectsDefault);
+        const matchingSupervisorIds = new Set(matchingSupervisors.map((supervisor: any) => supervisor.user_id));
         const row: number[] = [];
         const detailRow: ScoringResult[] = [];
         for (let si = 0; si < supervisorSlots.length; si++) {
           const { supervisor, slotIndex } = supervisorSlots[si];
+
+          if (!matchingSupervisorIds.has(supervisor.user_id)) {
+            row.push(0);
+            detailRow.push(emptyScoreResult('Expertise mismatch'));
+            continue;
+          }
+
           const supVecIdx = supVectorMap.get(supervisor.user_id)!;
           const supVector = vectors[projects.length + supVecIdx];
           const loadPenalty = slotIndex * 0.5;
@@ -914,8 +947,7 @@ serve(async (req) => {
       const supDocs = matchingSupervisors.map(s => supervisorToDocument(s));
       const { vectors } = buildTfIdf([projDoc, ...supDocs]);
 
-      let bestMatch: any = null;
-      let bestScore = 0;
+      const scoredMatches: any[] = [];
       for (let si = 0; si < matchingSupervisors.length; si++) {
         const supervisor = matchingSupervisors[si];
 
@@ -926,32 +958,86 @@ serve(async (req) => {
           supervisor.max_projects || maxProjects
         );
 
-        if (result.score > bestScore) {
-          bestScore = result.score;
-          bestMatch = { supervisor, ...result };
+        if (result.score > 0) {
+          scoredMatches.push({ supervisor, ...result });
         }
       }
 
-      // Create pending allocation for best match
-      if (bestMatch) {
-        const { error: allocError } = await supabaseClient
-          .from('pending_allocations')
-          .insert({
-            project_id: projectId,
-            supervisor_id: bestMatch.supervisor.user_id,
-            match_score: bestMatch.score,
-            match_reason: bestMatch.reasons.join(', '),
-            status: 'pending',
-          });
+      if (scoredMatches.length === 0) {
+        const { data: admins } = await adminClient
+          .from('profiles')
+          .select('user_id')
+          .eq('user_type', 'admin');
 
-        if (allocError) throw allocError;
+        if (admins && admins.length > 0) {
+          for (const admin of admins) {
+            await supabaseClient.from('notifications').insert({
+              user_id: admin.user_id,
+              title: 'Manual Assignment Needed',
+              message: `Project "${project.title}" matched the ${projectCategory} category, but no qualified supervisor with available capacity could be scored for routing. Please assign manually.`,
+              type: 'allocation',
+              link: `/projects/${projectId}`,
+            });
+          }
+        }
+
+        return new Response(
+          JSON.stringify({ success: true, allocated: false, message: 'No qualified supervisor with available capacity could be routed.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      scoredMatches.sort((a, b) => b.score - a.score);
+      const bestMatch = scoredMatches[0];
+
+      const supervisorIds = scoredMatches.map(({ supervisor }) => supervisor.user_id);
+      const { data: supervisorProfiles } = await adminClient
+        .from('profiles')
+        .select('user_id, full_name')
+        .in('user_id', supervisorIds);
+
+      const supervisorNameMap = new Map((supervisorProfiles || []).map((profile: any) => [profile.user_id, profile.full_name || 'Unknown supervisor']));
+      const supervisorNames = scoredMatches.map(({ supervisor }) => supervisorNameMap.get(supervisor.user_id) || 'Unknown supervisor');
+
+      const { error: allocError } = await supabaseClient
+        .from('pending_allocations')
+        .insert(scoredMatches.map((match) => ({
+          project_id: projectId,
+          supervisor_id: match.supervisor.user_id,
+          match_score: match.score,
+          match_reason: match.reasons.join(', '),
+          status: 'pending',
+        })));
+
+      if (allocError) throw allocError;
+
+      for (const match of scoredMatches) {
+        const supervisorName = supervisorNameMap.get(match.supervisor.user_id) || 'A matching supervisor';
+
+        await supabaseClient
+          .from('pending_allocations')
+          .update({
+            match_reason: `${match.reasons.join(', ')} • Routed for ${projectCategory}`,
+          });
 
         await supabaseClient
           .from('notifications')
           .insert({
-            user_id: bestMatch.supervisor.user_id,
+            user_id: match.supervisor.user_id,
             title: 'New Project Submission',
-            message: `A new ${projectCategory} project "${project.title}" matches your expertise (${bestMatch.score}% match). Please review it.`,
+            message: `A new ${projectCategory} project "${project.title}" matches your expertise and has been routed to you for review by the system (${match.score}% match).`,
+            type: 'allocation',
+            link: `/projects/${projectId}`
+          });
+      }
+
+      if (project.student_id) {
+        await supabaseClient
+          .from('notifications')
+          .insert({
+            user_id: project.student_id,
+            title: 'Project Submitted',
+            message: `Your project "${project.title}" has been submitted to ${supervisorNames.join(', ')} for review based on the ${projectCategory} category.`,
             type: 'allocation',
             link: `/projects/${projectId}`
           });
@@ -960,12 +1046,13 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           success: true,
-          allocated: !!bestMatch,
-          supervisorName: bestMatch?.supervisor.user_id,
+          allocated: true,
+          supervisorName: supervisorNameMap.get(bestMatch.supervisor.user_id) || 'Unknown supervisor',
+          supervisorNames,
           matchScore: bestMatch?.score || 0,
           matchReason: bestMatch?.reasons.join(', ') || '',
           breakdown: bestMatch?.breakdown,
-          notifiedSupervisors: bestMatch ? 1 : 0,
+          notifiedSupervisors: scoredMatches.length,
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -981,6 +1068,22 @@ serve(async (req) => {
       let assignedSupervisorName = 'a supervisor';
 
       if (isSupervisor) {
+        const { data: allocationCheck, error: allocationCheckError } = await supabaseClient
+          .from('pending_allocations')
+          .select('id')
+          .eq('project_id', projectId)
+          .eq('supervisor_id', user.id)
+          .eq('status', 'pending')
+          .maybeSingle();
+
+        if (allocationCheckError && allocationCheckError.code !== 'PGRST116') throw allocationCheckError;
+        if (!allocationCheck) {
+          return new Response(
+            JSON.stringify({ error: 'This project was not routed to you for review.' }),
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
         // Supervisor approving → assign to themselves
         const { data: supervisorCheck } = await supabaseClient
           .from('supervisors')
@@ -1091,6 +1194,12 @@ serve(async (req) => {
           .eq('project_id', projectId)
           .eq('supervisor_id', assignedSupervisorId);
 
+        await supabaseClient
+          .from('pending_allocations')
+          .update({ status: 'rejected' })
+          .eq('project_id', projectId)
+          .neq('supervisor_id', assignedSupervisorId);
+
         const { count: newCount } = await supabaseClient
           .from('projects')
           .select('*', { count: 'exact', head: true })
@@ -1141,6 +1250,24 @@ serve(async (req) => {
         throw new Error('Please provide feedback on areas that need improvement');
       }
 
+      if (profile.user_type === 'supervisor') {
+        const { data: allocationCheck, error: allocationCheckError } = await supabaseClient
+          .from('pending_allocations')
+          .select('id')
+          .eq('project_id', projectId)
+          .eq('supervisor_id', user.id)
+          .eq('status', 'pending')
+          .maybeSingle();
+
+        if (allocationCheckError && allocationCheckError.code !== 'PGRST116') throw allocationCheckError;
+        if (!allocationCheck) {
+          return new Response(
+            JSON.stringify({ error: 'This project was not routed to you for review.' }),
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
       const { error: projectError } = await supabaseClient
         .from('projects')
         .update({ status: 'needs_revision', rejection_reason: rejectionReason.trim(), supervisor_id: null })
@@ -1151,8 +1278,7 @@ serve(async (req) => {
       await supabaseClient
         .from('pending_allocations')
         .update({ status: 'rejected' })
-        .eq('project_id', projectId)
-        .eq('supervisor_id', user.id);
+        .eq('project_id', projectId);
 
       const { data: project } = await supabaseClient
         .from('projects')
@@ -1252,11 +1378,20 @@ serve(async (req) => {
 
       // Track projected load per supervisor for workload scoring
       for (let pi = 0; pi < unassignedProjects.length; pi++) {
+        const { matchingSupervisors } = getMatchingSupervisors(unassignedProjects[pi], allSupervisors || [], maxProjectsDefault);
+        const matchingSupervisorIds = new Set(matchingSupervisors.map((supervisor: any) => supervisor.user_id));
         const row: number[] = [];
         const detailRow: ScoringResult[] = [];
 
         for (let si = 0; si < supervisorSlots.length; si++) {
           const { supervisor, slotIndex } = supervisorSlots[si];
+
+          if (!matchingSupervisorIds.has(supervisor.user_id)) {
+            row.push(0);
+            detailRow.push(emptyScoreResult('Expertise mismatch'));
+            continue;
+          }
+
           const supVecIdx = supVectorMap.get(supervisor.user_id)!;
           const supVector = vectors[unassignedProjects.length + supVecIdx];
 

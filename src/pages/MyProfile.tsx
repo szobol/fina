@@ -31,12 +31,28 @@ export default function MyProfile() {
     queryKey: ['my-profile', user?.id],
     queryFn: async () => {
       if (!user) return null;
-      const { data } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      return data;
+      const [{ data: profileData }, { data: supervisorData }] = await Promise.all([
+        supabase
+          .from('profiles')
+          .select('*')
+          .eq('user_id', user.id)
+          .maybeSingle(),
+        supabase
+          .from('supervisors')
+          .select('research_areas, max_projects, current_projects, department')
+          .eq('user_id', user.id)
+          .maybeSingle(),
+      ]);
+
+      if (!profileData) return null;
+
+      return {
+        ...profileData,
+        department: supervisorData?.department || profileData.department || '',
+        research_areas: supervisorData?.research_areas || profileData.research_areas || [],
+        max_projects: supervisorData?.max_projects ?? profileData.max_projects ?? 5,
+        current_projects: supervisorData?.current_projects ?? (profileData as any)?.current_projects ?? 0,
+      };
     },
     enabled: !!user,
   });
@@ -91,12 +107,29 @@ export default function MyProfile() {
         updates.max_projects = parseInt(form.max_projects) || 5;
       }
 
-      const { error } = await supabase
+      const { error: profileError } = await supabase
         .from('profiles')
         .update(updates)
         .eq('user_id', user.id);
 
-      if (error) throw error;
+      if (profileError) throw profileError;
+
+      if (isSupervisor) {
+        const { error: supervisorError } = await supabase
+          .from('supervisors')
+          .upsert(
+            {
+              user_id: user.id,
+              department: updates.department || null,
+              research_areas: updates.research_areas || [],
+              max_projects: updates.max_projects || 5,
+            },
+            { onConflict: 'user_id' }
+          );
+
+        if (supervisorError) throw supervisorError;
+      }
+
       await queryClient.invalidateQueries({ queryKey: ['my-profile'] });
       setEditing(false);
       toast.success('Profile updated successfully');
