@@ -1300,16 +1300,6 @@ serve(async (req) => {
         ({ supervisor }) => supervisorNameMap.get(supervisor.user_id) || "Matching supervisor",
       );
 
-      const { error: allocError } = await supabaseClient.from("pending_allocations").insert(
-        scoredMatches.map((match) => ({
-          project_id: projectId,
-          supervisor_id: match.supervisor.user_id,
-          match_score: match.score,
-          match_reason: match.reasons.join(", "),
-          status: "pending",
-        })),
-      );
-
       const { error: routedAllocationsError } = await adminClient.from("pending_allocations").insert(
         scoredMatches.map((match) => ({
           project_id: projectId,
@@ -1320,7 +1310,6 @@ serve(async (req) => {
         })),
       );
 
-      if (allocError) throw allocError;
       if (routedAllocationsError) throw routedAllocationsError;
 
       for (const match of scoredMatches) {
@@ -1791,6 +1780,6 @@ serve(async (req) => {
   } catch (error) {
     const payload = getErrorPayload(error);
     console.error("Error:", payload.error, payload.diagnostics ?? {});
-    return jsonResponse(payload, 400);
+    return jsonResponse({ ok: false, ...payload });
   }
 });
