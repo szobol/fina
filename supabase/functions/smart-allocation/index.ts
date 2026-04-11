@@ -303,7 +303,7 @@ async function getSupervisorPool(client: any, maxProjectsDefault: number) {
 
   if (profilesError) throw profilesError;
 
-  const profileMap = new Map((profiles || []).map((profile: SupervisorProfileRecord) => [profile.user_id, profile]));
+  const profileMap = new Map<string, SupervisorProfileRecord>((profiles || []).map((profile: SupervisorProfileRecord) => [profile.user_id, profile]));
 
   return (supervisors || []).map((supervisor: any) => {
     const profile: SupervisorProfileRecord | null = profileMap.get(supervisor.user_id) || null;
