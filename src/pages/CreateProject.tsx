@@ -214,13 +214,15 @@ export default function CreateProject() {
                 <h2 className="text-2xl font-bold mb-2">{isFinished ? "Project Added!" : "Submitted Successfully!"}</h2>
                 {!isFinished && allocationResult?.allocated ? (
                   <div className="space-y-3">
-                    <p className="text-sm text-muted-foreground">Your project has been matched to a supervisor based on expertise.</p>
+                    <p className="text-sm text-muted-foreground">
+                      Your project has been submitted to {allocationResult.supervisorNames?.join(', ') || allocationResult.supervisorName || 'matching supervisor(s)'} based on expertise.
+                    </p>
                     <div className="bg-accent/50 rounded-lg p-4 text-left">
                       <div className="flex items-center gap-2 mb-2"><Sparkles className="h-4 w-4 text-primary" /><span className="font-semibold text-sm">Match Details</span></div>
                       <p className="text-xs text-muted-foreground">Score: <span className="font-medium text-foreground">{allocationResult.matchScore}%</span></p>
                       <p className="text-xs text-muted-foreground">Reason: <span className="font-medium text-foreground">{allocationResult.matchReason}</span></p>
                     </div>
-                    <p className="text-xs text-muted-foreground">The supervisor will review your project and accept or request revisions.</p>
+                    <p className="text-xs text-muted-foreground">Only supervisors whose expertise matches your selected category were notified, and they can now accept or reject it.</p>
                   </div>
                 ) : !isFinished ? (
                   <p className="text-sm text-muted-foreground">Pending supervisor assignment. You'll be notified when a supervisor reviews your project.</p>
