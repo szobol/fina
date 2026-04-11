@@ -4,7 +4,7 @@ project_id = "glrwzmmljjojmwnuiafc"
 verify_jwt = false
 
 [functions.smart-allocation]
-verify_jwt = true
+verify_jwt = false
 
 [functions.create-supervisor]
 verify_jwt = false

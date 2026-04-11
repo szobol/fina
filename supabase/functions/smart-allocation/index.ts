@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -688,9 +688,15 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return jsonResponse({ ok: false, error: "Missing SUPABASE_URL or SUPABASE_ANON_KEY env vars" });
+    }
+
+    const authHeader = req.headers.get("Authorization") || "";
     const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: {
-        headers: { Authorization: req.headers.get("Authorization")! },
+        headers: { Authorization: authHeader },
       },
     });
     const adminClient = serviceRoleKey ? createClient(supabaseUrl, serviceRoleKey) : supabaseClient;
@@ -699,7 +705,7 @@ serve(async (req) => {
       data: { user },
     } = await supabaseClient.auth.getUser();
     if (!user) {
-      throw new Error("Not authenticated");
+      return jsonResponse({ ok: false, error: "Not authenticated. Please log in and try again." });
     }
 
     const { data: profile } = await supabaseClient
@@ -710,10 +716,30 @@ serve(async (req) => {
 
     console.log("User profile:", profile);
 
-    if (!profile) throw new Error("User profile not found");
-    if (!profile.user_type) throw new Error("User type not set in profile. Please contact administrator.");
+    if (!profile) return jsonResponse({ ok: false, error: "User profile not found" });
+    if (!profile.user_type) return jsonResponse({ ok: false, error: "User type not set in profile." });
 
-    const body = await req.json();
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ ok: false, error: "Invalid or missing request body" });
+    }
+
+    const {
+      action,
+      projectId,
+      supervisorId,
+      newSupervisorId,
+      name,
+      description,
+      department,
+      project_type,
+      members,
+      groupId,
+      allocationId,
+      rejectionReason,
+    } = body;
     const {
       action,
       projectId,
