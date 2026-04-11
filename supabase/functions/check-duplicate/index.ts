@@ -198,10 +198,11 @@ serve(async (req) => {
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
-    const { data: authData, error: authError } = await authClient.auth.getUser(accessToken);
-    const user = authData?.user;
 
-    if (authError || !user) {
+    const { data: claimsData, error: authError } = await authClient.auth.getClaims(accessToken);
+    const userId = claimsData?.claims?.sub;
+
+    if (authError || !userId) {
       console.error('Auth validation failed in check-duplicate:', authError);
       return new Response(
         JSON.stringify({ error: authError?.message || 'Not authenticated' }),
