@@ -285,6 +285,42 @@ function uniqueNonEmptyStrings(values: any[] = []): string[] {
   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function getErrorPayload(error: unknown): { error: string; diagnostics?: Record<string, unknown> } {
+  if (error instanceof Error) {
+    return {
+      error: error.message,
+      diagnostics: {
+        name: error.name,
+        stack: error.stack,
+      },
+    };
+  }
+
+  if (typeof error === "object" && error !== null) {
+    const record = error as Record<string, unknown>;
+    const message = [record.message, record.details, record.hint, record.code]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join(" | ");
+
+    return {
+      error: message || JSON.stringify(record),
+      diagnostics: Object.fromEntries(Object.entries(record)),
+    };
+  }
+
+  return {
+    error: typeof error === "string" && error.trim().length > 0 ? error : "Unknown error",
+    diagnostics: { raw: String(error) },
+  };
+}
+
 function getDisplayName(person: any, fallback: string): string {
   return person?.full_name?.trim() || person?.email?.trim() || fallback;
 }
@@ -1144,7 +1180,7 @@ serve(async (req) => {
     if (action === "auto_allocate_project") {
       console.log("Auto-allocating project:", projectId);
 
-      const { data: project, error: projectError } = await supabaseClient
+      const { data: project, error: projectError } = await adminClient
         .from("projects")
         .select("*")
         .eq("id", projectId)
@@ -1152,7 +1188,7 @@ serve(async (req) => {
 
       if (projectError) throw projectError;
 
-      const { data: rules } = await supabaseClient.from("allocation_rules").select("*");
+      const { data: rules } = await adminClient.from("allocation_rules").select("*");
 
       const maxProjects = rules?.find((r) => r.rule_name === "max_projects_per_supervisor")?.rule_value || 5;
 
@@ -1164,15 +1200,20 @@ serve(async (req) => {
         maxProjects,
       );
 
-      await supabaseClient.from("pending_allocations").delete().eq("project_id", projectId);
+      const { error: clearPendingAllocationsError } = await adminClient
+        .from("pending_allocations")
+        .delete()
+        .eq("project_id", projectId);
+
+      if (clearPendingAllocationsError) throw clearPendingAllocationsError;
 
       if (!projectCategory || matchingSupervisors.length === 0) {
         // No supervisors available — notify admin for manual assignment
-        const { data: admins } = await supabaseClient.from("profiles").select("user_id").eq("user_type", "admin");
+        const { data: admins } = await adminClient.from("profiles").select("user_id").eq("user_type", "admin");
 
         if (admins && admins.length > 0) {
           for (const admin of admins) {
-            await supabaseClient.from("notifications").insert({
+            const { error: notificationError } = await adminClient.from("notifications").insert({
               user_id: admin.user_id,
               title: "Manual Assignment Needed",
               message: !projectCategory
@@ -1181,6 +1222,8 @@ serve(async (req) => {
               type: "allocation",
               link: `/projects/${projectId}`,
             });
+
+            if (notificationError) throw notificationError;
           }
         }
 
@@ -1224,13 +1267,15 @@ serve(async (req) => {
 
         if (admins && admins.length > 0) {
           for (const admin of admins) {
-            await supabaseClient.from("notifications").insert({
+            const { error: notificationError } = await adminClient.from("notifications").insert({
               user_id: admin.user_id,
               title: "Manual Assignment Needed",
               message: `Project "${project.title}" matched the ${projectCategory} category, but no qualified supervisor with available capacity could be scored for routing. Please assign manually.`,
               type: "allocation",
               link: `/projects/${projectId}`,
             });
+
+            if (notificationError) throw notificationError;
           }
         }
 
@@ -1255,7 +1300,7 @@ serve(async (req) => {
         ({ supervisor }) => supervisorNameMap.get(supervisor.user_id) || "Matching supervisor",
       );
 
-      const { error: allocError } = await supabaseClient.from("pending_allocations").insert(
+      const { error: routedAllocationsError } = await adminClient.from("pending_allocations").insert(
         scoredMatches.map((match) => ({
           project_id: projectId,
           supervisor_id: match.supervisor.user_id,
@@ -1265,12 +1310,12 @@ serve(async (req) => {
         })),
       );
 
-      if (allocError) throw allocError;
+      if (routedAllocationsError) throw routedAllocationsError;
 
       for (const match of scoredMatches) {
         const supervisorName = supervisorNameMap.get(match.supervisor.user_id) || "A matching supervisor";
 
-        await supabaseClient
+        const { error: updateAllocationError } = await adminClient
           .from("pending_allocations")
           .update({
             match_reason: `${match.reasons.join(", ")} • Routed for ${projectCategory}`,
@@ -1278,23 +1323,29 @@ serve(async (req) => {
           .eq("project_id", projectId)
           .eq("supervisor_id", match.supervisor.user_id);
 
-        await supabaseClient.from("notifications").insert({
+        if (updateAllocationError) throw updateAllocationError;
+
+        const { error: notificationError } = await adminClient.from("notifications").insert({
           user_id: match.supervisor.user_id,
           title: "New Project Submission",
           message: `A new ${projectCategory} project "${project.title}" matches your expertise and has been routed to you for review. Open it to accept or reject it (${match.score}% match).`,
           type: "allocation",
           link: `/allocation`,
         });
+
+        if (notificationError) throw notificationError;
       }
 
       if (project.student_id) {
-        await supabaseClient.from("notifications").insert({
+        const { error: studentNotificationError } = await adminClient.from("notifications").insert({
           user_id: project.student_id,
           title: "Project Submitted",
           message: `Your project "${project.title}" has been submitted to ${supervisorNames.join(", ")} for review because their expertise matches the ${projectCategory} category.`,
           type: "allocation",
           link: `/projects/${projectId}`,
         });
+
+        if (studentNotificationError) throw studentNotificationError;
       }
 
       return new Response(
@@ -1727,10 +1778,8 @@ serve(async (req) => {
 
     throw new Error("Invalid action");
   } catch (error) {
-    console.error("Error:", error);
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-      status: 400,
-    });
+    const payload = getErrorPayload(error);
+    console.error("Error:", payload.error, payload.diagnostics ?? {});
+    return jsonResponse({ ok: false, ...payload });
   }
 });
