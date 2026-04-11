@@ -161,6 +161,55 @@ function normalizeLabel(value: string): string {
     .trim();
 }
 
+type SupervisorProfileRecord = {
+  user_id: string;
+  full_name: string | null;
+  email: string | null;
+  department: string | null;
+  research_areas: string[] | null;
+  max_projects: number | null;
+  current_projects: number | null;
+};
+
+type SupervisorPoolRecord = {
+  user_id: string;
+  department: string | null;
+  research_areas: string[] | null;
+  max_projects: number | null;
+  current_projects: number | null;
+  full_name: string | null;
+  email: string | null;
+};
+
+const CATEGORY_ALIASES: Record<string, string[]> = {
+  "artificial intelligence": ["artificial intelligence", "ai", "intelligent systems"],
+  "machine learning": ["machine learning", "ml", "predictive analytics"],
+  "web development": ["web development", "web", "website", "frontend", "backend", "full stack", "fullstack"],
+  "mobile development": ["mobile development", "mobile", "android", "ios", "flutter", "react native"],
+  "iot internet of things": ["iot", "internet of things", "smart devices", "embedded iot"],
+  "cybersecurity": ["cybersecurity", "cyber security", "information security", "network security", "ethical hacking"],
+  "data science": ["data science", "data analytics", "analytics", "big data", "data mining"],
+  "cloud computing": ["cloud computing", "cloud", "aws", "azure", "gcp", "devops"],
+  "blockchain": ["blockchain", "distributed ledger", "smart contracts", "web3"],
+  "robotics": ["robotics", "robot", "automation", "autonomous systems"],
+  "software engineering": ["software engineering", "software design", "software architecture", "software development"],
+  "networking": ["networking", "computer networks", "network administration", "network engineering"],
+  "embedded systems": ["embedded systems", "embedded", "microcontroller", "firmware"],
+  "game development": ["game development", "game design", "gaming", "unity", "unreal"],
+};
+
+function getCategorySynonyms(value: string): string[] {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return [];
+
+  const directAliases = CATEGORY_ALIASES[normalized] || [];
+  const matchedAliases = Object.entries(CATEGORY_ALIASES)
+    .filter(([key, aliases]) => key === normalized || aliases.some((alias) => normalizeLabel(alias) === normalized))
+    .flatMap(([key, aliases]) => [key, ...aliases]);
+
+  return uniqueNonEmptyStrings([normalized, ...directAliases, ...matchedAliases]);
+}
+
 function getProjectCategory(project: any): string {
   if (typeof project?.category === "string" && project.category.trim()) {
     return project.category.trim();
@@ -178,6 +227,30 @@ function researchAreaMatchesCategory(category: string, researchArea: string): bo
   const normalizedArea = normalizeLabel(researchArea);
 
   if (!normalizedCategory || !normalizedArea) return false;
+
+  const categoryAliases = getCategorySynonyms(category);
+  const areaAliases = getCategorySynonyms(researchArea);
+
+  if (
+    categoryAliases.some((alias) => normalizedArea.includes(alias) || alias.includes(normalizedArea)) ||
+    areaAliases.some((alias) => normalizedCategory.includes(alias) || alias.includes(normalizedCategory))
+  ) {
+    return true;
+  }
+
+  if (
+    categoryAliases.some((categoryAlias) =>
+      areaAliases.some(
+        (areaAlias) =>
+          areaAlias.includes(categoryAlias) ||
+          categoryAlias.includes(areaAlias) ||
+          ngramSimilarity(areaAlias, categoryAlias) > 0.45,
+      ),
+    )
+  ) {
+    return true;
+  }
+
   if (normalizedArea.includes(normalizedCategory) || normalizedCategory.includes(normalizedArea)) return true;
 
   const categoryTerms = normalizedCategory.split(" ").filter((term) => term.length > 2);
@@ -230,23 +303,23 @@ async function getSupervisorPool(client: any, maxProjectsDefault: number) {
 
   if (profilesError) throw profilesError;
 
-  const profileMap = new Map((profiles || []).map((profile: any) => [profile.user_id, profile]));
+  const profileMap = new Map<string, SupervisorProfileRecord>((profiles || []).map((profile: SupervisorProfileRecord) => [profile.user_id, profile]));
 
-  return supervisors.map((supervisor: any) => {
-    const profile = profileMap.get(supervisor.user_id) || {};
+  return (supervisors || []).map((supervisor: any) => {
+    const profile = (profileMap.get(supervisor.user_id) as Partial<SupervisorProfileRecord> | undefined) ?? null;
 
     return {
       ...supervisor,
-      full_name: profile.full_name || null,
-      email: profile.email || null,
-      department: supervisor.department || profile.department || null,
+      full_name: profile?.full_name || null,
+      email: profile?.email || null,
+      department: supervisor.department || profile?.department || null,
       research_areas: uniqueNonEmptyStrings([
         ...(Array.isArray(supervisor.research_areas) ? supervisor.research_areas : []),
-        ...(Array.isArray(profile.research_areas) ? profile.research_areas : []),
+        ...(Array.isArray(profile?.research_areas) ? profile.research_areas : []),
       ]),
-      max_projects: supervisor.max_projects || profile.max_projects || maxProjectsDefault,
-      current_projects: supervisor.current_projects ?? profile.current_projects ?? 0,
-    };
+      max_projects: supervisor.max_projects || profile?.max_projects || maxProjectsDefault,
+      current_projects: supervisor.current_projects ?? profile?.current_projects ?? 0,
+    } as SupervisorPoolRecord;
   });
 }
 
@@ -1125,7 +1198,7 @@ serve(async (req) => {
 
       // Build TF-IDF for scoring
       const projDoc = projectToDocument(project);
-      const supDocs = matchingSupervisors.map((s) => supervisorToDocument(s));
+      const supDocs = matchingSupervisors.map((s: SupervisorPoolRecord) => supervisorToDocument(s));
       const { vectors } = buildTfIdf([projDoc, ...supDocs]);
 
       const scoredMatches: any[] = [];
@@ -1539,13 +1612,13 @@ serve(async (req) => {
 
       // Build TF-IDF corpus across all projects + unique supervisors
       const projDocs = unassignedProjects.map((p) => projectToDocument(p));
-      const uniqueSupDocs = allSupervisors.map((s) => supervisorToDocument(s));
+      const uniqueSupDocs = allSupervisors.map((s: SupervisorPoolRecord) => supervisorToDocument(s));
       const { vectors } = buildTfIdf([...projDocs, ...uniqueSupDocs]);
       const projVectors = vectors.slice(0, unassignedProjects.length);
 
       // Map supervisor user_id → vector index
       const supVectorMap = new Map<string, number>();
-      allSupervisors.forEach((s, i) => supVectorMap.set(s.user_id, i));
+      allSupervisors.forEach((s: SupervisorPoolRecord, i: number) => supVectorMap.set(s.user_id, i));
 
       // Build score matrix: projects × supervisor slots
       const scoreMatrix: number[][] = [];
