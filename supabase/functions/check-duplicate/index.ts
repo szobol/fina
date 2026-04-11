@@ -187,20 +187,24 @@ serve(async (req) => {
     }
 
     const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
+    if (!authHeader?.startsWith('Bearer ')) {
       return new Response(
-        JSON.stringify({ error: 'Missing authorization header' }),
+        JSON.stringify({ error: 'Missing or invalid authorization header' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
+    const accessToken = authHeader.replace('Bearer ', '').trim();
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
-    const { data: { user }, error: authError } = await authClient.auth.getUser();
+    const { data: authData, error: authError } = await authClient.auth.getUser(accessToken);
+    const user = authData?.user;
+
     if (authError || !user) {
+      console.error('Auth validation failed in check-duplicate:', authError);
       return new Response(
-        JSON.stringify({ error: 'Not authenticated' }),
+        JSON.stringify({ error: authError?.message || 'Not authenticated' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
